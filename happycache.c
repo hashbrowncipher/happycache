@@ -15,7 +15,7 @@ int load_from_map(FILE* map) {
 
 	char line[4096];
 
-	while(true) {
+	while(!feof(map)) {
 		if(fgets(line, sizeof(line), map) == NULL) {
 			return 1;
 		}
@@ -46,9 +46,8 @@ int load_from_map(FILE* map) {
 
 		volatile long val __attribute__((unused)) = 0;
 		size_t page = 0;
-		int more_lines = 1;
 
-		while(more_lines && !feof(map)) {
+		while(!feof(map)) {
 			size_t skip;
 			if(fscanf(map, "%lu\n", &skip) != 1) {
 				break;
@@ -65,6 +64,8 @@ int load_from_map(FILE* map) {
 			close(fd);
 		}
 	}
+
+	return 0;
 }
 
 void dump_file(int fd, char* fullpath) {
@@ -103,9 +104,7 @@ void dump_file(int fd, char* fullpath) {
 	}
 
 out:
-	if(file_mmap != MAP_FAILED) {
-		munmap(file_mmap, file_stat.st_size);
-	}
+	munmap(file_mmap, file_stat.st_size);
 }
 
 void dump_dir(DIR* dir, char* dirname, int dirname_len) {
@@ -144,37 +143,39 @@ void dump_dir(DIR* dir, char* dirname, int dirname_len) {
 	}
 }
 
+void do_usage(char* name) {
+	fprintf(stderr, "Usage: %s (dump|load) args...\n", name);
+	fprintf(stderr, "  dump [directory]\n");
+	fprintf(stderr, "    recursively dumps a directory, defaulting to cwd\n");
+	fprintf(stderr, "  load [filename]\n");
+	fprintf(stderr, "    loads a dump file, defaulting to stdin\n");
+	exit(1);
+}
+
 int main(int argc, char** argv) {
-	int load_flag = 0;
-	int c;
-
-	opterr = 0;
-	while ((c = getopt (argc, argv, "l")) != -1) {
-		switch(c) {
-		case 'l':
-			load_flag = 1;
-			break;
-		default:
-			exit(1);
-			break;
-		}
+	if(argc < 2 || argc > 3) {
+		do_usage(argv[0]);
 	}
 
-	if(argc < 2) {
-		exit(1);
-	}
-
-	char * filename = argv[optind];
-	if(load_flag) {
-		FILE* map = fopen(filename, "r");
-		if(map == NULL) {
-			perror("Could not open map file");
-			exit(1);
+	if(strcmp(argv[1], "load") == 0) {
+		FILE* map = stdin;
+		if(argc == 3) {
+			map = fopen(argv[2], "r");
+			if(map == NULL) {
+				perror("Could not open map file");
+				exit(1);
+			}
 		}
 		load_from_map(map);
-	} else {
+		if(map != stdin) {
+			fclose(map);
+		}
+	} else if(strcmp(argv[1], "dump") == 0) {
+		char * filename = argc == 3 ? argv[2] : ".";
 		DIR* dir = opendir(filename);
 		dump_dir(dir, filename, strlen(filename));
 		closedir(dir);
+	} else {
+		do_usage(argv[0]);
 	}
 }
