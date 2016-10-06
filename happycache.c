@@ -1,5 +1,7 @@
 #include <dirent.h>
 #include <fcntl.h>
+#include <linux/sched.h>
+#include <sched.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -162,6 +164,10 @@ int main(int argc, char** argv) {
 	if(argc < 2 || argc > 3) {
 		do_usage(argv[0]);
 	}
+
+	struct sched_param param;
+	param.sched_priority = 0;
+	sched_setscheduler(0, SCHED_IDLE, &param);
 
 	if(strcmp(argv[1], "load") == 0) {
 		FILE* map = stdin;
