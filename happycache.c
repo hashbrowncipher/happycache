@@ -146,9 +146,15 @@ void dump_dir(DIR* dir, char* dirname, int dirname_len) {
 void do_usage(char* name) {
 	fprintf(stderr, "Usage: %s (dump|load) args...\n", name);
 	fprintf(stderr, "  dump [directory]\n");
-	fprintf(stderr, "    recursively dumps a directory, defaulting to cwd\n");
+	fprintf(stderr, "    print out a map of pages that are currently in the page cache. happycache\n");
+	fprintf(stderr, "    recursively walks the files in the directory given by <directory>. Only\n");
+	fprintf(stderr, "    files in that directory are mapped. If <directory> is not specified, the\n");
+	fprintf(stderr, "    current working directory is assumed by default.\n");
+	fprintf(stderr, "\n");
 	fprintf(stderr, "  load [filename]\n");
-	fprintf(stderr, "    loads a dump file, defaulting to stdin\n");
+	fprintf(stderr, "    load pages into the cache using a happycache dump. If no <filename> is\n");
+	fprintf(stderr, "    specified, happycache reads from stdin.\n");
+
 	exit(1);
 }
 

@@ -19,17 +19,16 @@ Usage
 ::
 
   $ happycache
-  Usage: happycache [-dl] [<name>]
+  Usage: happycache (dump|load) args...
+    dump [directory]
+      print out a map of pages that are currently in the page cache. happycache
+      recursively walks the files in the directory given by <directory>. Only
+      files in that directory are mapped. If <directory> is not specified, the
+      current working directory is assumed by default.
 
-  -d: dump mode (default)
-  print out a map of pages that are currently in the page cache. happycache 
-  recursively walks the files in the directory given by <name>. Only files 
-  in that directory are mapped. If <name> is not specified, the current
-  working directory is assumed.
- 
-  -l: load mode
-  load pages into the cache using a happycache dump. If no <name> is specified,
-  happycache reads from stdin.
+    load [filename]
+      load pages into the cache using a happycache dump. If no <filename> is
+      specified, happycache reads from stdin.
 
 Examples
 ~~~~~~~~
