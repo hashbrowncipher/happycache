@@ -3,3 +3,5 @@
 language: c
 sudo: false 
 script: dpkg-buildpackage
+sudo: required
+dist: trusty
