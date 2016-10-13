@@ -340,14 +340,15 @@ void dump_dir(DIR* dir, char* dirname, int dirname_len) {
 void do_usage(char* name) {
 	fprintf(stderr, "Usage: %s (dump|load) args...\n", name);
 	fprintf(stderr, "  dump [directory]\n");
-	fprintf(stderr, "    print out a map of pages that are currently in the page cache. happycache\n");
-	fprintf(stderr, "    recursively walks the files in the directory given by <directory>. Only\n");
-	fprintf(stderr, "    files in that directory are mapped. If <directory> is not specified, the\n");
-	fprintf(stderr, "    current working directory is assumed by default.\n");
+	fprintf(stderr, "    print out a map of pages that are currently in the page cache by recursively\n");
+	fprintf(stderr, "    walking a directory.\n");
+	fprintf(stderr, "      directory: the directory to walk\n");
+	fprintf(stderr, "                   (default=current working directory)\n");
 	fprintf(stderr, "\n");
 	fprintf(stderr, "  load [filename] [threads]\n");
-	fprintf(stderr, "    load pages into the cache using a happycache dump. If no <filename> is\n");
-	fprintf(stderr, "    specified, happycache reads from stdin.\n");
+	fprintf(stderr, "    load pages into the cache using a happycache dump file\n");
+	fprintf(stderr, "      filename: the happycache dump file to read (default=stdin)\n");
+	fprintf(stderr, "      threads: the number of threads to read with (default=32)\n");
 
 	exit(1);
 }
