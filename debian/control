@@ -1,0 +1,15 @@
+Source: happycache
+Maintainer: Josh Snyder <josh@code406.com>
+Section: database
+Priority: optional
+Standards-Version: 3.9.2
+Build-Depends: debhelper (>= 9)
+Homepage: https://github.com/hashbrowncipher/happycache
+
+Package: happycache
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: happy caches for happy databases
+ happycache is a utility designed that makes it easy to quicky re-fill a page 
+ cache using the pages that were present previously. A happy cache makes for a
+ happy database!
