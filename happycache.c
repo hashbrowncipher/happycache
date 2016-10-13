@@ -3,12 +3,8 @@
 
 #include <dirent.h>
 #include <fcntl.h>
-#include <linux/sched.h>
 #include <pthread.h>
-#include <sched.h>
 #include <semaphore.h>
-#include <stdatomic.h>
-#include <signal.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
