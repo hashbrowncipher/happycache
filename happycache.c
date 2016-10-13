@@ -1,6 +1,15 @@
+#define _GNU_SOURCE
+#define _XOPEN_SOURCE 700
+
 #include <dirent.h>
 #include <fcntl.h>
+#include <pthread.h>
+#include <semaphore.h>
+#include <stdatomic.h>
+#include <signal.h>
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,9 +18,141 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-int load_from_map(FILE* map) {
+#define container_of(ptr, type, member) ({			\
+	const typeof( ((type *)0)->member ) *__mptr = (ptr);	\
+	(type *)( (char *)__mptr - offsetof(type,member) );})
+
+struct singly_linked {
+	struct singly_linked * next;
+};
+typedef struct singly_linked sl;
+
+struct read_work {
+	struct singly_linked list;
+	int fd;
+	void * addr;
+    void * base_addr;
+};
+typedef struct read_work read_work;
+
+struct fd_info {
+	void * base_addr;
+	size_t length;
+	int64_t count;
+};
+typedef struct fd_info fd_info;
+
+struct singly_linked_list {
+	struct singly_linked * head;
+	struct singly_linked ** tail;
+
+	pthread_mutex_t head_lock;
+	pthread_mutex_t tail_lock;
+	sem_t items;
+};
+typedef struct singly_linked_list sll;
+
+sll work_list;
+sll free_list;
+
+sl * list_pop_head(sll * list) {
+	sem_wait(&list->items);
+
+	pthread_mutex_lock(&list->head_lock);
+	sl * ret = list->head;
+	list->head = ret->next;
+	if(list->head == NULL) {
+		// If we have emptied the list, we need to reset the tail
+		// pointer to equal head.
+		pthread_mutex_lock(&list->tail_lock);
+		// Double check. This could have changed.
+		if(ret->next == NULL) {
+			list->tail = &list->head;
+		} else {
+			list->head = ret->next;
+		}
+		pthread_mutex_unlock(&list->tail_lock);
+	}
+	pthread_mutex_unlock(&list->head_lock);
+
+	return ret;
+}
+
+void list_push_tail(sll * list, sl * l) {
+	pthread_mutex_lock(&list->tail_lock);
+
+	l->next = NULL;
+
+	*list->tail = l;
+	list->tail = &l->next;
+
+	pthread_mutex_unlock(&list->tail_lock);
+	sem_post(&list->items);
+}
+
+void finished_file_op(fd_info * fds, int fd) {
+	fd_info * fdi = &fds[fd];
+	if(--fdi->count == 0) {
+		munmap(fdi->base_addr, fdi->length);
+		close(fd);
+	}
+}
+
+void list_init(sll * list) {
+	sem_init(&list->items, 0, 0);
+	list->head = NULL;
+	list->tail = &list->head;
+	pthread_mutex_init(&list->head_lock, NULL);
+	pthread_mutex_init(&list->tail_lock, NULL);
+}
+
+struct loader_state {
+	sll * work_list;
+	sll * free_list;
+};
+
+int read_worker(struct loader_state * state) {
+	long val = 0;
+	while(true) {
+		read_work * my_work = container_of(
+			list_pop_head(&work_list),
+			read_work,
+			list
+		);
+		val ^= *(long *)(my_work->addr);
+		list_push_tail(&free_list, &my_work->list);
+	}
+	return val;
+}
+
+int load_from_map(FILE* map, int num_threads) {
 	long page_size = sysconf(_SC_PAGESIZE);
 	int page_shift = __builtin_ctz(page_size);
+
+	list_init(&work_list);
+	list_init(&free_list);
+
+	uint32_t item_count = num_threads * 2;
+	read_work * items = calloc(item_count, sizeof(read_work));
+	for(uint32_t i = 0; i < item_count; i++) {
+		list_push_tail(&free_list, &items[i].list);
+	}
+
+	fd_info * fds = calloc(item_count * 2, sizeof(fd_info));
+
+	struct loader_state args;
+	args.work_list = &work_list;
+	args.free_list = &free_list;
+
+	pthread_t * threads = calloc(num_threads, sizeof(pthread_t));
+	for(uint32_t i = 0; i < num_threads; i++) {
+		pthread_create(
+			&threads[i],
+			NULL,
+			(void * (*)(void *)) read_worker,
+			(void *) &args
+		);
+	}
 
 	char line[4096];
 
@@ -35,6 +176,10 @@ int load_from_map(FILE* map) {
 
 			num_pages = (file_stat.st_size + page_size - 1) / page_size;
 			file_mmap = mmap(0, file_stat.st_size, PROT_READ, MAP_SHARED, fd, 0);
+			fds[fd].base_addr = file_mmap;
+			fds[fd].length = num_pages << page_shift;
+			fds[fd].count = 1;
+
 			if(file_mmap == MAP_FAILED) {
 				num_pages = -1;
 			}
@@ -42,13 +187,12 @@ int load_from_map(FILE* map) {
 			if(posix_madvise(file_mmap, file_stat.st_size, POSIX_MADV_RANDOM) != 0) {
 				num_pages = -1;
 			}
+
 		}
 
-		volatile long val __attribute__((unused)) = 0;
 		size_t page = 0;
-		int more_lines = 1;
 
-		while(more_lines && !feof(map)) {
+		while(!feof(map)) {
 			size_t skip;
 			if(fscanf(map, "%lu\n", &skip) != 1) {
 				break;
@@ -56,13 +200,28 @@ int load_from_map(FILE* map) {
 
 			page += skip;
 
-			if(page <= num_pages) {
-				val = file_mmap[page << page_shift];
+			if(page > num_pages) {
+				continue;
 			}
+
+			read_work * rw = container_of(
+				list_pop_head(&free_list),
+				read_work,
+				list
+			);
+			if(rw->addr != 0) {
+				finished_file_op(fds, rw->fd);
+			}
+
+			fds[fd].count++;
+			rw->fd = fd;
+			rw->addr = (void *) &file_mmap[page << page_shift];
+			rw->base_addr = &file_mmap;
+			list_push_tail(&work_list, &rw->list);
 		}
 
-		if(-1 != fd) {
-			close(fd);
+		if(fd != -1) {
+			finished_file_op(fds, fd);
 		}
 	}
 }
@@ -163,7 +322,6 @@ int main(int argc, char** argv) {
 	if(argc < 2) {
 		exit(1);
 	}
-
 	char * filename = argv[optind];
 	if(load_flag) {
 		FILE* map = fopen(filename, "r");
@@ -171,7 +329,11 @@ int main(int argc, char** argv) {
 			perror("Could not open map file");
 			exit(1);
 		}
-		load_from_map(map);
+		int num_threads = 32;
+		if(argc - optind > 1) {
+			num_threads = atoi(argv[optind+1]);
+		}
+		load_from_map(map, num_threads);
 	} else {
 		DIR* dir = opendir(filename);
 		dump_dir(dir, filename, strlen(filename));
