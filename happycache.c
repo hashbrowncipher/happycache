@@ -24,6 +24,9 @@
 	const typeof( ((type *)0)->member ) *__mptr = (ptr);	\
 	(type *)( (char *)__mptr - offsetof(type,member) );})
 
+long page_size;
+int page_shift;
+
 struct singly_linked {
 	struct singly_linked * next;
 };
@@ -39,8 +42,8 @@ typedef struct read_work read_work;
 
 struct fd_info {
 	void * base_addr;
-	size_t length;
-	int64_t count;
+	size_t num_pages;
+	int64_t refcount;
 };
 typedef struct fd_info fd_info;
 
@@ -84,7 +87,6 @@ void list_push_tail(sll * list, sl * l) {
 	pthread_mutex_lock(&list->tail_lock);
 
 	l->next = NULL;
-
 	*list->tail = l;
 	list->tail = &l->next;
 
@@ -92,10 +94,11 @@ void list_push_tail(sll * list, sl * l) {
 	sem_post(&list->items);
 }
 
-void finished_file_op(fd_info * fds, int fd) {
-	fd_info * fdi = &fds[fd];
-	if(--fdi->count == 0) {
-		munmap(fdi->base_addr, fdi->length);
+void finished_file_op(fd_info * fdi, int fd) {
+	if(--fdi->refcount == 0) {
+		if(fdi->base_addr != MAP_FAILED) {
+			munmap(fdi->base_addr, fdi->num_pages << page_shift);
+		}
 		close(fd);
 	}
 }
@@ -113,8 +116,8 @@ struct loader_state {
 	sll * free_list;
 };
 
-int read_worker(struct loader_state * state) {
-	long val = 0;
+void read_worker(struct loader_state * state) {
+	volatile long val = 0;
 	while(true) {
 		read_work * my_work = container_of(
 			list_pop_head(&work_list),
@@ -124,12 +127,106 @@ int read_worker(struct loader_state * state) {
 		val ^= *(long *)(my_work->addr);
 		list_push_tail(&free_list, &my_work->list);
 	}
-	return val;
 }
 
+int prepare_file(char * line, fd_info * fds) {
+	// Trim newline
+	line[strlen(line) - 1] = 0;
+
+	int fd = open(line, O_RDONLY);
+	if(-1 == fd) {
+		fprintf(stderr, "Could not open %s: ", line);
+		perror(NULL);
+		return -1;
+	}
+
+	fd_info * fdi = &fds[fd];
+
+	fdi->base_addr = MAP_FAILED;
+	fdi->refcount = 1;
+	fdi->num_pages = -1;
+
+	struct stat file_stat;
+	if(fstat(fd, &file_stat) != 0) {
+		fprintf(stderr, "Could not fstat %s: ", line);
+		perror(NULL);
+		return fd;
+	}
+
+	uint64_t num_pages = (file_stat.st_size + page_size - 1) / page_size;
+
+	fdi->base_addr = mmap(0, num_pages << page_shift, PROT_READ, MAP_SHARED, fd, 0);
+	if(fdi->base_addr == MAP_FAILED) {
+		fprintf(stderr, "Could not mmap %s: ", line);
+		perror(NULL);
+		return fd;
+	}
+
+	if(posix_madvise(fdi->base_addr, file_stat.st_size, POSIX_MADV_RANDOM) != 0) {
+		fprintf(stderr, "Could not posix_madvise %s: ", line);
+		perror(NULL);
+		return fd;
+	}
+
+	//Only update the struct's num_pages once we're confident everything's
+	//tip-top
+	fdi->num_pages = num_pages;
+
+	return fd;
+}
+
+void load_pages(
+	FILE * map,
+	fd_info * fds,
+	int fd,
+	sll * free_list,
+	sll * work_list
+) {
+	int64_t num_pages = -1;
+	int64_t page = 0;
+
+	char * file_mmap = NULL;
+
+	if(fd != -1) {
+		file_mmap = fds[fd].base_addr;
+		num_pages = fds[fd].num_pages;
+	}
+
+	while(!feof(map)) {
+		uint64_t skip;
+		if(fscanf(map, "%lu\n", &skip) != 1) {
+			break;
+		}
+
+		page += skip;
+
+		if(page > num_pages) {
+			continue;
+		}
+
+		read_work * rw = container_of(
+			list_pop_head(free_list),
+			read_work,
+			list
+		);
+		finished_file_op(&fds[rw->fd], rw->fd);
+
+		fds[fd].refcount++;
+		rw->fd = fd;
+		rw->addr = (void *)&file_mmap[page << page_shift];
+		rw->base_addr = file_mmap;
+		list_push_tail(work_list, &rw->list);
+	}
+
+	if(fd != -1) {
+		finished_file_op(&fds[fd], fd);
+	}
+}
+
+
 int load_from_map(FILE* map, int num_threads) {
-	long page_size = sysconf(_SC_PAGESIZE);
-	int page_shift = __builtin_ctz(page_size);
+	page_size = sysconf(_SC_PAGESIZE);
+	page_shift = __builtin_ctz(page_size);
 
 	list_init(&work_list);
 	list_init(&free_list);
@@ -162,69 +259,8 @@ int load_from_map(FILE* map, int num_threads) {
 		if(fgets(line, sizeof(line), map) == NULL) {
 			return 1;
 		}
-
-		line[strlen(line) - 1] = 0;
-
-		int fd = open(line, O_RDONLY);
-		ssize_t num_pages;
-		char* file_mmap = NULL;
-		if(-1 == fd) {
-			num_pages = -1;
-		} else {
-			struct stat file_stat;
-			if(fstat(fd, &file_stat) != 0) {
-				return 1;
-			}
-
-			num_pages = (file_stat.st_size + page_size - 1) / page_size;
-			file_mmap = mmap(0, file_stat.st_size, PROT_READ, MAP_SHARED, fd, 0);
-			fds[fd].base_addr = file_mmap;
-			fds[fd].length = num_pages << page_shift;
-			fds[fd].count = 1;
-
-			if(file_mmap == MAP_FAILED) {
-				num_pages = -1;
-			}
-
-			if(posix_madvise(file_mmap, file_stat.st_size, POSIX_MADV_RANDOM) != 0) {
-				num_pages = -1;
-			}
-
-		}
-
-		size_t page = 0;
-
-		while(!feof(map)) {
-			size_t skip;
-			if(fscanf(map, "%lu\n", &skip) != 1) {
-				break;
-			}
-
-			page += skip;
-
-			if(page > num_pages) {
-				continue;
-			}
-
-			read_work * rw = container_of(
-				list_pop_head(&free_list),
-				read_work,
-				list
-			);
-			if(rw->addr != 0) {
-				finished_file_op(fds, rw->fd);
-			}
-
-			fds[fd].count++;
-			rw->fd = fd;
-			rw->addr = (void *) &file_mmap[page << page_shift];
-			rw->base_addr = &file_mmap;
-			list_push_tail(&work_list, &rw->list);
-		}
-
-		if(fd != -1) {
-			finished_file_op(fds, fd);
-		}
+		int fd = prepare_file(line, fds);
+		load_pages(map, fds, fd, &free_list, &work_list);
 	}
 
 	return 0;
@@ -313,15 +349,61 @@ void do_usage(char* name) {
 	fprintf(stderr, "    files in that directory are mapped. If <directory> is not specified, the\n");
 	fprintf(stderr, "    current working directory is assumed by default.\n");
 	fprintf(stderr, "\n");
-	fprintf(stderr, "  load [filename]\n");
+	fprintf(stderr, "  load [filename] [threads]\n");
 	fprintf(stderr, "    load pages into the cache using a happycache dump. If no <filename> is\n");
 	fprintf(stderr, "    specified, happycache reads from stdin.\n");
 
 	exit(1);
 }
 
+void do_load(int argc, char** argv, char * progname) {
+	if(argc > 2) {
+		do_usage(progname);
+	}
+
+	FILE* map = stdin;
+	int num_threads = 32;
+
+	if(argc >= 1) {
+		map = fopen(argv[0], "r");
+		if(map == NULL) {
+			perror("Could not open map file");
+			exit(1);
+		}
+	}
+
+	if(argc >= 2) {
+		num_threads = strtoul(argv[1], NULL, 10);
+		if(num_threads < 0) {
+			fputs("Invalid number of threads\n", stderr);
+			exit(1);
+		}
+	}
+
+	load_from_map(map, num_threads);
+	if(map != stdin) {
+		fclose(map);
+	}
+}
+
+void do_dump(int argc, char ** argv, char * progname) {
+	if(argc > 1) {
+		do_usage(progname);
+	}
+
+	char * filename = argc >= 1 ? argv[0] : ".";
+	DIR* dir = opendir(filename);
+	if(NULL == dir) {
+		fprintf(stderr, "Could not open %s: ", filename);
+		perror(NULL);
+		exit(1);
+	}
+	dump_dir(dir, ".", 1);
+	closedir(dir);
+}
+
 int main(int argc, char** argv) {
-	if(argc < 2 || argc > 3) {
+	if(argc < 2) {
 		do_usage(argv[0]);
 	}
 
@@ -330,29 +412,9 @@ int main(int argc, char** argv) {
 	sched_setscheduler(0, SCHED_IDLE, &param);
 
 	if(strcmp(argv[1], "load") == 0) {
-		FILE* map = stdin;
-		int num_threads = 32;
-
-		if(argc >= 3) {
-			map = fopen(argv[2], "r");
-			if(map == NULL) {
-				perror("Could not open map file");
-				exit(1);
-			}
-		}
-		if(argc >= 4) {
-			num_threads = atoi(argv[3]);
-		}
-
-		load_from_map(map, num_threads);
-		if(map != stdin) {
-			fclose(map);
-		}
+		do_load(argc - 2, &argv[2], argv[0]);
 	} else if(strcmp(argv[1], "dump") == 0) {
-		char * filename = argc == 3 ? argv[2] : ".";
-		DIR* dir = opendir(filename);
-		dump_dir(dir, filename, strlen(filename));
-		closedir(dir);
+		do_dump(argc - 2, &argv[2], argv[0]);
 	} else {
 		do_usage(argv[0]);
 	}
