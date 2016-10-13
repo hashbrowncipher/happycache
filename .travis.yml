@@ -5,3 +5,6 @@ sudo: false
 script: dpkg-buildpackage
 sudo: required
 dist: trusty
+before_install:
+  - sudo apt-get -qq update
+  - sudo apt-get install debhelper
