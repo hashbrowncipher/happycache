@@ -9,4 +9,4 @@ all: happycache
 
 .PHONY: install
 install: happycache
-	install -D -m 755 -t $(DESTDIR)$(prefix)/bin/ happycache
+	install -D -m 755 happycache $(DESTDIR)$(prefix)/bin/happycache
