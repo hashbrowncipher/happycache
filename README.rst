@@ -19,17 +19,16 @@ Usage
 ::
 
   $ happycache
-  Usage: happycache [-dl] [<name>]
+  Usage: happycache (dump|load) args...
+    dump [directory]
+      print out a map of pages that are currently in the page cache. happycache
+      recursively walks the files in the directory given by <directory>. Only
+      files in that directory are mapped. If <directory> is not specified, the
+      current working directory is assumed by default.
 
-  -d: dump mode (default)
-  print out a map of pages that are currently in the page cache. happycache 
-  recursively walks the files in the directory given by <name>. Only files 
-  in that directory are mapped. If <name> is not specified, the current
-  working directory is assumed.
- 
-  -l: load mode
-  load pages into the cache using a happycache dump. If no <name> is specified,
-  happycache reads from stdin.
+    load [filename]
+      load pages into the cache using a happycache dump. If no <filename> is
+      specified, happycache reads from stdin.
 
 Examples
 ~~~~~~~~
@@ -55,9 +54,10 @@ Can I use the same happycache map on two different servers?
   to it).
 
 Does a happycache dump file include the contents of pages?
-  No. The happycache dump includes only enough information to _locate_ pages.
-  The dump does not contain any actual data from within the pages. As such,
-  happycache dumps 
+  No. The happycache dump includes only enough information to *locate* pages.
+  The dump does not contain any actual data from within the pages. As a result,
+  happycache dumps are small, and do not leak any confidential data that may
+  be in the page cache.
 
 Does happycache have a performance impact?
   The purpose of happycache is to populate a page cache as quickly as the
@@ -77,4 +77,16 @@ Can happycache cause kernel panics (or plague, or lice)?
 Should I run this after my nightly backups to repopulate the page-cache?
   Instead of using happycache to repopulate a busted page cache, I would
   consider using a backup tool which does not thrash the page cache in the
-  first place.
+  first place. ``tar``, for example, works with the operating system to ensure
+  that the files it reads do not remain in the page cache.
+
+How can I use cgroups to preserve the page cache?
+-------------------------------------------------
+
+The need for happycache can be avoided in many cases by using cgroups to limit
+the amount of page cache an application can consume. For instance, one can run
+``mycommand`` in a memory cgroup with 50MB of memory like so::
+
+  $ sudo cgcreate -g memory:backups -a $USER -t $USER
+  $ cgset -r memory.limit_in_bytes=52428800 backups
+  $ cgexec -g memory:backups mycommand
