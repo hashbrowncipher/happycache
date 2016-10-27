@@ -6,9 +6,8 @@ cache to serve queries. Maintenance events like reboots result in the database
 software operating against an empty or almost empty page cache, hampering
 performance until the cache can fill.
 
-happycache is a utility designed to make it easy to quicky re-fill a page
-cache using the pages that were present previously. A happy cache makes for a
-happy database!
+happycache is a utility to quicky re-fill ths OS page cache using the pages
+that were present previously. A happy cache makes for a happy database!
 
 Command-line usage
 ------------------

@@ -15,6 +15,9 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <zlib.h>
+
+#define MAP_FILENAME ".happycache.gz"
 
 #define container_of(ptr, type, member) ({			\
 	const typeof( ((type *)0)->member ) *__mptr = (ptr);	\
@@ -52,9 +55,6 @@ struct singly_linked_list {
 	sem_t items;
 };
 typedef struct singly_linked_list sll;
-
-sll work_list;
-sll free_list;
 
 sl * list_pop_head(sll * list) {
 	sem_wait(&list->items);
@@ -116,20 +116,17 @@ void read_worker(struct loader_state * state) {
 	volatile long val = 0;
 	while(true) {
 		read_work * my_work = container_of(
-			list_pop_head(&work_list),
+			list_pop_head(state->work_list),
 			read_work,
 			list
 		);
 		val ^= *(long *)(my_work->addr);
-		list_push_tail(&free_list, &my_work->list);
+		list_push_tail(state->free_list, &my_work->list);
 	}
 }
 
 int prepare_file(char * line, fd_info * fds) {
-	// Trim newline
-	line[strlen(line) - 1] = 0;
-
-	int fd = open(line, O_RDONLY);
+	int fd = open(line, O_RDONLY | O_CLOEXEC);
 	if(-1 == fd) {
 		fprintf(stderr, "Could not open %s: ", line);
 		perror(NULL);
@@ -171,56 +168,41 @@ int prepare_file(char * line, fd_info * fds) {
 	return fd;
 }
 
-void load_pages(
-	FILE * map,
+void enqueue_load_page(
 	fd_info * fds,
 	int fd,
+	int64_t page,
 	sll * free_list,
 	sll * work_list
 ) {
-	int64_t num_pages = -1;
-	int64_t page = 0;
-
-	char * file_mmap = NULL;
-
-	if(fd != -1) {
-		file_mmap = fds[fd].base_addr;
-		num_pages = fds[fd].num_pages;
+	if(fd == -1) {
+		return;
 	}
 
-	while(!feof(map)) {
-		uint64_t skip;
-		if(fscanf(map, "%lu\n", &skip) != 1) {
-			break;
-		}
+	char * file_mmap = fds[fd].base_addr;
+	uint64_t num_pages = fds[fd].num_pages;
 
-		page += skip;
-
-		if(page > num_pages) {
-			continue;
-		}
-
-		read_work * rw = container_of(
-			list_pop_head(free_list),
-			read_work,
-			list
-		);
-		finished_file_op(&fds[rw->fd], rw->fd);
-
-		fds[fd].refcount++;
-		rw->fd = fd;
-		rw->addr = (void *)&file_mmap[page << page_shift];
-		rw->base_addr = file_mmap;
-		list_push_tail(work_list, &rw->list);
+	if(page > num_pages) {
+		return;
 	}
+	read_work * rw = container_of(
+		list_pop_head(free_list),
+		read_work,
+		list
+	);
+	finished_file_op(&fds[rw->fd], rw->fd);
 
-	if(fd != -1) {
-		finished_file_op(&fds[fd], fd);
-	}
+	fds[fd].refcount++;
+	rw->fd = fd;
+	rw->addr = (void *)&file_mmap[page << page_shift];
+	rw->base_addr = file_mmap;
+	list_push_tail(work_list, &rw->list);
 }
 
+int load_from_map(gzFile map, int num_threads) {
+	sll work_list;
+	sll free_list;
 
-int load_from_map(FILE* map, int num_threads) {
 	page_size = sysconf(_SC_PAGESIZE);
 	page_shift = __builtin_ctz(page_size);
 
@@ -250,19 +232,50 @@ int load_from_map(FILE* map, int num_threads) {
 	}
 
 	char line[4096];
+	int fd = -1;
+	//page == -1 signifies that we are between files
+	int64_t page = -1;
 
-	while(!feof(map)) {
-		if(fgets(line, sizeof(line), map) == NULL) {
+	while(!gzeof(map)) {
+		if(gzgets(map, line, sizeof(line)) == NULL) {
 			return 1;
 		}
-		int fd = prepare_file(line, fds);
-		load_pages(map, fds, fd, &free_list, &work_list);
+
+		size_t len = strlen(line) - 1;
+		//Trim the trailing newline.
+		line[len] = 0;
+
+		if(page >= 0) {
+			char * endptr;
+			unsigned long skip = strtoul(line, &endptr, 10);
+			if(endptr - line != len) {
+				//We can't parse this as a number, so it must be a filename.
+				//Filenames start either with ./ or /, so this works.
+				page = -1;
+				if(fd != -1) {
+					finished_file_op(&fds[fd], fd);
+				}
+			} else {
+				page += skip;
+				enqueue_load_page(fds, fd, page, &free_list, &work_list);
+			}
+		}
+
+		if(page < 0) {
+			fd = prepare_file(line, fds);
+			page = 0;
+		}
 	}
 
+	for(uint32_t i = 0; i < num_threads; i++) {
+		pthread_join(threads[i], NULL);
+	}
+
+	// We leak fds here. Not much of an issue.
 	return 0;
 }
 
-void dump_file(int fd, char* fullpath) {
+void dump_file(int fd, char* fullpath, gzFile outfile) {
 	long page_size = sysconf(_SC_PAGESIZE);
 	struct stat file_stat;
 	if(fstat(fd, &file_stat) != 0) {
@@ -289,10 +302,10 @@ void dump_file(int fd, char* fullpath) {
 	for(size_t i = 0; i < num_pages; i++) {
 		if(mincore_vec[i] & 0x01) {
 			if(!printed_title) {
-				printf("%s\n", fullpath);
+				gzprintf(outfile, "%s\n", fullpath);
 				printed_title = 1;
 			}
-			printf("%lu\n", i - last);
+			gzprintf(outfile, "%lu\n", i - last);
 			last = i;
 		}
 	}
@@ -301,7 +314,7 @@ out:
 	munmap(file_mmap, file_stat.st_size);
 }
 
-void dump_dir(DIR* dir, char* dirname, int dirname_len) {
+void dump_dir(DIR* dir, char* dirname, int dirname_len, gzFile outfile) {
 	struct dirent *ep;
 	while((ep = readdir(dir))) {
 		if(strcmp(ep->d_name, "..") == 0 ||
@@ -322,11 +335,11 @@ void dump_dir(DIR* dir, char* dirname, int dirname_len) {
 
 		if(down_fd != -1) {
 			if(ep->d_type & DT_REG) {
-				dump_file(down_fd, fullpath);
+				dump_file(down_fd, fullpath, outfile);
 				close(down_fd);
 			} else if(ep->d_type & DT_DIR) {
 				DIR* dir = fdopendir(down_fd);
-				dump_dir(dir, fullpath, concat_len);
+				dump_dir(dir, fullpath, concat_len, outfile);
 				closedir(dir);
 			}
 		} else {
@@ -339,16 +352,14 @@ void dump_dir(DIR* dir, char* dirname, int dirname_len) {
 
 void do_usage(char* name) {
 	fprintf(stderr, "Usage: %s (dump|load) args...\n", name);
-	fprintf(stderr, "  dump [directory]\n");
-	fprintf(stderr, "    print out a map of pages that are currently in the page cache by recursively\n");
-	fprintf(stderr, "    walking a directory.\n");
-	fprintf(stderr, "      directory: the directory to walk\n");
-	fprintf(stderr, "                   (default=current working directory)\n");
+	fprintf(stderr, "  dump\n");
+	fprintf(stderr, "    save a map of pages that are currently in the page cache by recursively\n");
+	fprintf(stderr, "    walking the current working directory.\n");
 	fprintf(stderr, "\n");
-	fprintf(stderr, "  load [filename] [threads]\n");
+	fprintf(stderr, "  load [threads] [filename]\n");
 	fprintf(stderr, "    load pages into the cache using a happycache dump file\n");
-	fprintf(stderr, "      filename: the happycache dump file to read (default=stdin)\n");
 	fprintf(stderr, "      threads: the number of threads to read with (default=32)\n");
+	fprintf(stderr, "      filename: the happycache dump file to read (default=.happycache.gz)\n");
 
 	exit(1);
 }
@@ -358,29 +369,35 @@ void do_load(int argc, char** argv, char * progname) {
 		do_usage(progname);
 	}
 
-	FILE* map = stdin;
-	int num_threads = 32;
-
+	/*
+	 * Ideally this would map directly to the maximum queue depth of the
+	 * underlying block device. But that's impossible. So instead we multiply
+	 * the number of CPUs by 8. Fun!
+	 */
+	uint16_t num_threads = sysconf(_SC_NPROCESSORS_ONLN) * 8;
 	if(argc >= 1) {
-		map = fopen(argv[0], "r");
-		if(map == NULL) {
-			perror("Could not open map file");
+		char * endptr;
+		num_threads = strtoul(argv[0], &endptr, 10);
+		if(argv[0] + strlen(argv[0]) > endptr) {
+			fputs("Invalid number of threads", stderr);
 			exit(1);
 		}
 	}
 
+	char * to_read = MAP_FILENAME;
 	if(argc >= 2) {
-		num_threads = strtoul(argv[1], NULL, 10);
-		if(num_threads < 0) {
-			fputs("Invalid number of threads\n", stderr);
-			exit(1);
-		}
+		to_read = argv[1];
+	}
+
+	gzFile map = NULL;
+	map = gzopen(to_read, "rb");
+	if(map == NULL) {
+		perror("Could not open map file");
+		exit(1);
 	}
 
 	load_from_map(map, num_threads);
-	if(map != stdin) {
-		fclose(map);
-	}
+	gzclose(map);
 }
 
 void do_dump(int argc, char ** argv, char * progname) {
@@ -388,15 +405,29 @@ void do_dump(int argc, char ** argv, char * progname) {
 		do_usage(progname);
 	}
 
-	char * filename = argc >= 1 ? argv[0] : ".";
-	DIR* dir = opendir(filename);
-	if(NULL == dir) {
-		fprintf(stderr, "Could not open %s: ", filename);
+	char * outfile_name = alloca(32);
+	strncpy(outfile_name, ".happycache.gz.XXXXXX", 32);
+	int outfile_fd = mkostemp(outfile_name, O_CLOEXEC);
+	if(-1 == outfile_fd) {
+		fprintf(stderr, "Could not create temporary output file");
 		perror(NULL);
 		exit(1);
 	}
-	dump_dir(dir, ".", 1);
+
+	gzFile outfile = gzdopen(outfile_fd, "wb9");
+
+	char * filename = ".";
+	DIR* dir = opendir(filename);
+	if(NULL == dir) {
+		fprintf(stderr, "Could not open directory %s: ", filename);
+		perror(NULL);
+		exit(1);
+	}
+	dump_dir(dir, ".", 1, outfile);
 	closedir(dir);
+
+	gzclose(outfile);
+	rename(outfile_name, MAP_FILENAME);
 }
 
 int main(int argc, char** argv) {
