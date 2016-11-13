@@ -19,17 +19,11 @@
 
 #define MAP_FILENAME ".happycache.gz"
 
-#define container_of(ptr, type, member) ({			\
-	const typeof( ((type *)0)->member ) *__mptr = (ptr);	\
-	(type *)( (char *)__mptr - offsetof(type,member) );})
+#include "dumping.h"
+#include "list.h"
 
 long page_size;
 int page_shift;
-
-struct singly_linked {
-	struct singly_linked * next;
-};
-typedef struct singly_linked sl;
 
 struct read_work {
 	struct singly_linked list;
@@ -46,50 +40,6 @@ struct fd_info {
 };
 typedef struct fd_info fd_info;
 
-struct singly_linked_list {
-	struct singly_linked * head;
-	struct singly_linked ** tail;
-
-	pthread_mutex_t head_lock;
-	pthread_mutex_t tail_lock;
-	sem_t items;
-};
-typedef struct singly_linked_list sll;
-
-sl * list_pop_head(sll * list) {
-	sem_wait(&list->items);
-
-	pthread_mutex_lock(&list->head_lock);
-	sl * ret = list->head;
-	list->head = ret->next;
-	if(list->head == NULL) {
-		// If we have emptied the list, we need to reset the tail
-		// pointer to equal head.
-		pthread_mutex_lock(&list->tail_lock);
-		// Double check. This could have changed.
-		if(ret->next == NULL) {
-			list->tail = &list->head;
-		} else {
-			list->head = ret->next;
-		}
-		pthread_mutex_unlock(&list->tail_lock);
-	}
-	pthread_mutex_unlock(&list->head_lock);
-
-	return ret;
-}
-
-void list_push_tail(sll * list, sl * l) {
-	pthread_mutex_lock(&list->tail_lock);
-
-	l->next = NULL;
-	*list->tail = l;
-	list->tail = &l->next;
-
-	pthread_mutex_unlock(&list->tail_lock);
-	sem_post(&list->items);
-}
-
 void finished_file_op(fd_info * fdi, int fd) {
 	if(--fdi->refcount == 0) {
 		if(fdi->base_addr != MAP_FAILED) {
@@ -99,18 +49,19 @@ void finished_file_op(fd_info * fdi, int fd) {
 	}
 }
 
-void list_init(sll * list) {
-	sem_init(&list->items, 0, 0);
-	list->head = NULL;
-	list->tail = &list->head;
-	pthread_mutex_init(&list->head_lock, NULL);
-	pthread_mutex_init(&list->tail_lock, NULL);
-}
-
 struct loader_state {
 	sll * work_list;
 	sll * free_list;
 };
+
+uint16_t get_concurrency() {
+	/*
+	 * Ideally this would map directly to the maximum queue depth of the
+	 * underlying block device. But that's impossible. So instead we multiply
+	 * the number of CPUs by 8. Fun!
+	 */
+	return sysconf(_SC_NPROCESSORS_ONLN) * 8;
+}
 
 void read_worker(struct loader_state * state) {
 	volatile long val = 0;
@@ -275,81 +226,6 @@ int load_from_map(gzFile map, int num_threads) {
 	return 0;
 }
 
-void dump_file(int fd, char* fullpath, gzFile outfile) {
-	long page_size = sysconf(_SC_PAGESIZE);
-	struct stat file_stat;
-	if(fstat(fd, &file_stat) != 0) {
-		return;
-	}
-
-	int num_pages = (file_stat.st_size + page_size - 1) / page_size;
-	char* file_mmap = mmap(0, file_stat.st_size, PROT_NONE, MAP_SHARED, fd, 0);
-	if(file_mmap == MAP_FAILED) {
-		return;
-	}
-
-	unsigned char *mincore_vec = calloc(1, num_pages);
-	if(mincore_vec == NULL) {
-		goto out;
-	}
-
-	if(mincore(file_mmap, file_stat.st_size, mincore_vec) != 0) {
-		goto out;
-	}
-
-	int printed_title = 0;
-	size_t last = 0;
-	for(size_t i = 0; i < num_pages; i++) {
-		if(mincore_vec[i] & 0x01) {
-			if(!printed_title) {
-				gzprintf(outfile, "%s\n", fullpath);
-				printed_title = 1;
-			}
-			gzprintf(outfile, "%lu\n", i - last);
-			last = i;
-		}
-	}
-
-out:
-	munmap(file_mmap, file_stat.st_size);
-}
-
-void dump_dir(DIR* dir, char* dirname, int dirname_len, gzFile outfile) {
-	struct dirent *ep;
-	while((ep = readdir(dir))) {
-		if(strcmp(ep->d_name, "..") == 0 ||
-			strcmp(ep->d_name, ".") == 0) {
-			continue;
-		}
-
-		if(!(ep->d_type & (DT_REG|DT_DIR))) {
-			continue;
-		}
-
-		int basename_len = strlen(ep->d_name);
-		int concat_len = basename_len + dirname_len + 2;
-		char * fullpath = malloc(concat_len);
-		strncpy(fullpath, dirname, dirname_len);
-		snprintf(fullpath, concat_len, "%s/%s", dirname, ep->d_name);
-		int down_fd = openat(dirfd(dir), ep->d_name, O_RDONLY);
-
-		if(down_fd != -1) {
-			if(ep->d_type & DT_REG) {
-				dump_file(down_fd, fullpath, outfile);
-				close(down_fd);
-			} else if(ep->d_type & DT_DIR) {
-				DIR* dir = fdopendir(down_fd);
-				dump_dir(dir, fullpath, concat_len, outfile);
-				closedir(dir);
-			}
-		} else {
-			fprintf(stderr, "Could not open %s\n", fullpath);
-		}
-
-		free(fullpath);
-	}
-}
-
 void do_usage(char* name) {
 	fprintf(stderr, "Usage: %s (dump|load) args...\n", name);
 	fprintf(stderr, "  dump\n");
@@ -369,12 +245,7 @@ void do_load(int argc, char** argv, char * progname) {
 		do_usage(progname);
 	}
 
-	/*
-	 * Ideally this would map directly to the maximum queue depth of the
-	 * underlying block device. But that's impossible. So instead we multiply
-	 * the number of CPUs by 8. Fun!
-	 */
-	uint16_t num_threads = sysconf(_SC_NPROCESSORS_ONLN) * 8;
+	uint16_t num_threads = get_concurrency();
 	if(argc >= 1) {
 		char * endptr;
 		num_threads = strtoul(argv[0], &endptr, 10);
@@ -409,22 +280,52 @@ void do_dump(int argc, char ** argv, char * progname) {
 	strncpy(outfile_name, ".happycache.gz.XXXXXX", 32);
 	int outfile_fd = mkostemp(outfile_name, O_CLOEXEC);
 	if(-1 == outfile_fd) {
-		fprintf(stderr, "Could not create temporary output file");
+		fprintf(stderr, "Could not create temporary output file: ");
 		perror(NULL);
 		exit(1);
 	}
 
 	gzFile outfile = gzdopen(outfile_fd, "wb9");
 
+	struct dir_info * work = malloc(sizeof(struct dir_info));
 	char * filename = ".";
-	DIR* dir = opendir(filename);
-	if(NULL == dir) {
+	work->dir = opendir(filename);
+	if(NULL == work->dir) {
 		fprintf(stderr, "Could not open directory %s: ", filename);
 		perror(NULL);
 		exit(1);
 	}
-	dump_dir(dir, ".", 1, outfile);
-	closedir(dir);
+
+	sll work_list;
+	struct dumper_state state;
+	state.work_list = &work_list;
+	state.outfile = outfile;
+	state.open_directories = 1;
+	pthread_mutex_init(&state.outfile_lock, NULL);
+
+	work->len = 1;
+	work->path = malloc(work->len + 1);
+	strncpy(work->path, filename, work->len + 1);
+
+	list_init(&work_list);
+
+	int num_threads = get_concurrency();
+	pthread_t * threads = calloc(num_threads, sizeof(pthread_t));
+	for(uint32_t i = 0; i < num_threads; i++) {
+		pthread_create(
+			&threads[i],
+			NULL,
+			(void * (*)(void *)) dump_worker,
+			(void *) &state
+		);
+	}
+
+	list_push_head(&work_list, &work->list);
+
+	for(uint32_t i = 0; i < num_threads; i++) {
+		pthread_join(threads[i], NULL);
+		fprintf(stderr, "Joined %d\n", i);
+	}
 
 	gzclose(outfile);
 	rename(outfile_name, MAP_FILENAME);

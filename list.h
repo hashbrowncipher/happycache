@@ -3,6 +3,7 @@
 
 #include <pthread.h>
 #include <semaphore.h>
+#include <stdint.h>
 
 #define container_of(ptr, type, member) ({			\
 	const typeof( ((type *)0)->member ) *__mptr = (ptr);	\
@@ -19,7 +20,9 @@ struct singly_linked_list {
 
 	pthread_mutex_t head_lock;
 	pthread_mutex_t tail_lock;
-	sem_t items;
+	pthread_cond_t cond;
+	uint64_t items;
+	bool closed;
 };
 typedef struct singly_linked_list sll;
 
@@ -27,5 +30,6 @@ void list_init(sll * list);
 sl * list_pop_head(sll * list);
 void list_push_head(sll * list, sl * item);
 void list_push_tail(sll * list, sl * l);
+void list_close(sll * list);
 
 #endif
