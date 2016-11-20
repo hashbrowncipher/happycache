@@ -24,14 +24,12 @@ void dumper_init(
 	state->outfile = outfile;
 	state->open_directories = 1;
 	pthread_mutex_init(&state->outfile_lock, NULL);
-	sem_init(&state->dumping_sem, 0, sysconf(_SC_NPROCESSORS_ONLN));
 }
 
 void dump_file(int fd,
 	char* fullpath,
 	gzFile outfile,
-	pthread_mutex_t * outfile_lock,
-	sem_t * dumping_sem
+	pthread_mutex_t * outfile_lock
 ) {
 	long page_size = sysconf(_SC_PAGESIZE);
 	struct stat file_stat;
@@ -40,7 +38,6 @@ void dump_file(int fd,
 		return;
 	}
 
-	sem_wait(dumping_sem);
 	uint64_t file_pages = (file_stat.st_size + page_size - 1) / page_size;
 	uint64_t processed_pages = 0;
 	uint32_t chunk_pages = file_pages > CHUNK_SIZE ? CHUNK_SIZE : file_pages;
@@ -94,7 +91,6 @@ void dump_file(int fd,
 		processed_pages += chunk_pages;
 	}
 
-	sem_post(dumping_sem);
 
 out:
 	free(mincore_vec);
@@ -144,8 +140,7 @@ void dump_dir(
 					down_fd,
 					fullpath,
 					state->outfile,
-					&state->outfile_lock,
-					&state->dumping_sem
+					&state->outfile_lock
 				);
 				close(down_fd);
 			} else {

@@ -326,7 +326,6 @@ void do_dump(int argc, char ** argv, char * progname) {
 
 	for(uint32_t i = 0; i < num_threads; i++) {
 		pthread_join(threads[i], NULL);
-		fprintf(stderr, "Joined %d\n", i);
 	}
 
 	gzclose(outfile);
