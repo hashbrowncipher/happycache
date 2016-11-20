@@ -6,6 +6,7 @@ LDLIBS=-lpthread -lz
 .PHONY: all
 all: happycache
 
+happycache: list.c dumping.c happycache.c
 
 .PHONY: install
 install: happycache
