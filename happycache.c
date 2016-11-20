@@ -285,7 +285,7 @@ void do_dump(int argc, char ** argv, char * progname) {
 		exit(1);
 	}
 
-	gzFile outfile = gzdopen(outfile_fd, "wb9");
+	gzFile outfile = gzdopen(outfile_fd, "wb1");
 
 	struct dir_info * work = malloc(sizeof(struct dir_info));
 	char * filename = ".";
@@ -297,17 +297,19 @@ void do_dump(int argc, char ** argv, char * progname) {
 	}
 
 	sll work_list;
+	list_init(&work_list);
+
 	struct dumper_state state;
-	state.work_list = &work_list;
-	state.outfile = outfile;
-	state.open_directories = 1;
-	pthread_mutex_init(&state.outfile_lock, NULL);
+	dumper_init(
+		&state,
+		outfile,
+		&work_list
+	);
 
 	work->len = 1;
 	work->path = malloc(work->len + 1);
 	strncpy(work->path, filename, work->len + 1);
 
-	list_init(&work_list);
 
 	int num_threads = get_concurrency();
 	pthread_t * threads = calloc(num_threads, sizeof(pthread_t));

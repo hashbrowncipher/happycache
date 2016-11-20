@@ -7,6 +7,7 @@ struct dumper_state {
 	gzFile outfile;
 	uint32_t open_directories;
 	pthread_mutex_t outfile_lock;
+	sem_t dumping_sem;
 };
 
 struct dir_info {
@@ -17,3 +18,9 @@ struct dir_info {
 };
 
 void dump_worker(struct dumper_state * state);
+
+void dumper_init(
+	struct dumper_state *state,
+	gzFile outfile,
+	sll * work_list
+);

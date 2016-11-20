@@ -8,19 +8,9 @@
 #include "list.h"
 
 sl * list_pop_head(sll * list) {
-	struct timespec start;
-	struct timespec finish;
-	uint64_t nsec = 0;
-	uint64_t waits = 0;
-
 	pthread_mutex_lock(&list->head_lock);
 	while(list->items == 0 && !list->closed) {
-		clock_gettime(CLOCK_MONOTONIC, &start);
 		pthread_cond_wait(&list->cond, &list->head_lock);
-		clock_gettime(CLOCK_MONOTONIC, &finish);
-		nsec += 1000 * 1000 * 1000 * (finish.tv_sec - start.tv_sec);
-		nsec += finish.tv_nsec - start.tv_nsec;
-		waits++;
 	}
 
 	sl * ret = list->head;
@@ -42,20 +32,19 @@ sl * list_pop_head(sll * list) {
 	}
 
 	pthread_mutex_unlock(&list->head_lock);
-	if(waits > 0) {
-		//fprintf(stderr, "%lu %lu\n", waits, nsec);
-	}
 	return ret;
 }
 
 void list_push_head(sll * list, sl * item) {
 	bool locked_tail = false;
+
+	pthread_mutex_lock(&list->head_lock);
 	if(list->head == NULL) {
 		pthread_mutex_lock(&list->tail_lock);
 		locked_tail = true;
 	}
 
-	pthread_mutex_lock(&list->head_lock);
+
 	item->next = list->head;
 	list->head = item;
 	pthread_mutex_unlock(&list->head_lock);

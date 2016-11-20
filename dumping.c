@@ -14,10 +14,24 @@
 
 #define CHUNK_SIZE (1024 * 1024)
 
+void dumper_init(
+	struct dumper_state *state,
+	gzFile outfile,
+	sll * work_list
+)
+{
+	state->work_list = work_list;
+	state->outfile = outfile;
+	state->open_directories = 1;
+	pthread_mutex_init(&state->outfile_lock, NULL);
+	sem_init(&state->dumping_sem, 0, sysconf(_SC_NPROCESSORS_ONLN));
+}
+
 void dump_file(int fd,
 	char* fullpath,
 	gzFile outfile,
-	pthread_mutex_t * outfile_lock
+	pthread_mutex_t * outfile_lock,
+	sem_t * dumping_sem
 ) {
 	long page_size = sysconf(_SC_PAGESIZE);
 	struct stat file_stat;
@@ -26,10 +40,10 @@ void dump_file(int fd,
 		return;
 	}
 
+	sem_wait(dumping_sem);
 	uint64_t file_pages = (file_stat.st_size + page_size - 1) / page_size;
 	uint64_t processed_pages = 0;
 	uint32_t chunk_pages = file_pages > CHUNK_SIZE ? CHUNK_SIZE : file_pages;
-	off_t file_offset = 0;
 
 	unsigned char *mincore_vec = calloc(1, chunk_pages);
 	if(mincore_vec == NULL) {
@@ -43,9 +57,8 @@ void dump_file(int fd,
 
 		char* file_mmap = mmap(0, chunk_bytes, PROT_NONE, MAP_SHARED, fd, processed_pages * page_size);
 		if(file_mmap == MAP_FAILED) {
-			fprintf(stderr, "%u %lu %lu\n", chunk_pages, chunk_bytes, file_offset);
 			fprintf(stderr, "%s: %s\n", strerror(errno), fullpath);
-			return;
+			goto out;
 		}
 		file_pages -= chunk_pages;
 
@@ -57,25 +70,31 @@ void dump_file(int fd,
 			goto out;
 		}
 
-		bool printed = false;
-		ssize_t last = -processed_pages;
-		for(size_t i = 0; i < chunk_pages; i++) {
+		size_t i = 0;
+		for(; i < chunk_pages; i++) {
 			if(mincore_vec[i] & 0x01) {
-				if(!printed) {
-					pthread_mutex_lock(outfile_lock);
-					gzprintf(outfile, "%s\n", fullpath);
-					printed = 1;
-				}
-				gzprintf(outfile, "%lu\n", i - last);
-				last = i;
+				break;
 			}
 		}
-		if(printed) {
+
+		ssize_t last = -processed_pages;
+		if(i < chunk_pages) {
+			pthread_mutex_lock(outfile_lock);
+
+			gzprintf(outfile, "%s\n", fullpath);
+			for(; i < chunk_pages; i++) {
+				if(mincore_vec[i] & 0x01) {
+					gzprintf(outfile, "%lu\n", i - last);
+					last = i;
+				}
+			}
 			pthread_mutex_unlock(outfile_lock);
 		}
 
 		processed_pages += chunk_pages;
 	}
+
+	sem_post(dumping_sem);
 
 out:
 	free(mincore_vec);
@@ -92,7 +111,7 @@ void dump_dir(
 			continue;
 		}
 
-		if(!(ep->d_type & (DT_REG|DT_DIR))) {
+		if(ep->d_type != DT_REG && ep->d_type != DT_DIR) {
 			continue;
 		}
 
@@ -121,7 +140,13 @@ void dump_dir(
 			current->len = concat_len;
 		} else {
 			if(down_fd != -1) {
-				dump_file(down_fd, fullpath, state->outfile, &state->outfile_lock);
+				dump_file(
+					down_fd,
+					fullpath,
+					state->outfile,
+					&state->outfile_lock,
+					&state->dumping_sem
+				);
 				close(down_fd);
 			} else {
 				fprintf(stderr, "%s: %s\n", strerror(errno), fullpath);
