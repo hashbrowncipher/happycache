@@ -19,13 +19,13 @@ Usage
 
   $ happycache
   Usage: happycache (dump|load) args...
-    dump [directory]
+    dump
       print out a map of pages that are currently in the page cache by recursively
       walking a directory.
         directory: the directory to walk
                      (default=current working directory)
 
-    load [filename] [threads]
+    load [threads] [filename]
       load pages into the cache using a happycache dump file
         filename: the happycache dump file to read (default=stdin)
         threads: the number of threads to read with (default=32)
@@ -40,9 +40,9 @@ Cassandra data directory.
 
 ::
 
-  cassandra@box:/var/lib/cassandra$ happycache dump | gzip -9 > .happycache.gz
+  cassandra@box:/var/lib/cassandra$ happycache dump
   root@box:/var/lib/cassandra# reboot
-  cassandra@box:/var/lib/cassandra# zcat .happycache.gz | happycache load
+  cassandra@box:/var/lib/cassandra# happycache load
 
 We can use happycache load across servers. In the example below, we rsync files
 from the `/var/lib/cassandra` directory on box1 to the
@@ -51,9 +51,9 @@ encodes relative paths, it has no problem working under the modified path.
 
 ::
 
-  cassandra@box1:/var/lib/cassandra$ happycache dump | gzip -9 > .happycache.gz
+  cassandra@box1:/var/lib/cassandra$ happycache dump
   root@box2:/var/lib/cassandra/subdir# rsync -a box1:/var/lib/cassandra/ .
-  cassandra@box2:/var/lib/cassandra/subdir# zcat .happycache.gz | happycache load
+  cassandra@box2:/var/lib/cassandra/subdir# happycache load
 
 FAQ
 ---
