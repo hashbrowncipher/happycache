@@ -1,0 +1,8 @@
+Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: happycache
+Upstream-Contact: Josh Snyder <josh@code406.com>
+Source: https://github.com/hashbrowncipher/happycache
+
+Files: *
+Copyright: Copyright 2016 Josh Snyder <josh@code406.com>
+License: Apache-2.0
