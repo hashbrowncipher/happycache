@@ -1,4 +1,10 @@
-happycache (0.0.1) UNRELEASED; urgency=medium
+happycache (0.0.2) unstable; urgency=medium
+
+  * XFS doesn't provide d_type, so we have to stat()
+
+ -- Josh Snyder <josh@code406.com>  Wed, 10 Jan 2018 22:07:58 +0000
+
+happycache (0.0.1) unstable; urgency=medium
 
   * Initial release.
 
