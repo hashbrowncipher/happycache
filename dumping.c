@@ -107,19 +107,30 @@ void dump_dir(
 			continue;
 		}
 
-		if(ep->d_type != DT_REG && ep->d_type != DT_DIR) {
-			continue;
-		}
-
 		int basename_len = strlen(ep->d_name);
 		size_t concat_len = basename_len + current->len + 2;
 		char * fullpath = malloc(concat_len);
-
 		snprintf(fullpath, concat_len, "%s/%s", current->path, ep->d_name);
 
 		int down_fd = openat(dirfd(current->dir), ep->d_name, O_RDONLY);
+		if(down_fd == -1) {
+			fprintf(stderr, "%s: %s\n", strerror(errno), fullpath);
+			free(fullpath);
+			continue;
+		}
 
-		if(down_fd != -1 && (ep->d_type & DT_DIR)) {
+		unsigned char type = ep->d_type;
+
+		struct stat buf;
+		if(type == 0) {
+			fstat(down_fd, &buf);
+			switch(buf.st_mode & S_IFMT) {
+				case S_IFDIR: type = DT_DIR; break;
+				case S_IFREG: type = DT_REG; break;
+			}
+		}
+
+		if(type & DT_DIR) {
 			atomic_fetch_add(&state->open_directories, 1);
 			//Push the context we were working on to the shared stack
 			list_push_head(state->work_list, &current->list);
@@ -135,18 +146,16 @@ void dump_dir(
 			current->dir = fdopendir(down_fd);
 			current->len = concat_len;
 		} else {
-			if(down_fd != -1) {
+			if(type & DT_REG) {
 				dump_file(
 					down_fd,
 					fullpath,
 					state->outfile,
 					&state->outfile_lock
 				);
-				close(down_fd);
-			} else {
-				fprintf(stderr, "%s: %s\n", strerror(errno), fullpath);
 			}
 			free(fullpath);
+			close(down_fd);
 		}
 	}
 

@@ -310,7 +310,6 @@ void do_dump(int argc, char ** argv, char * progname) {
 	work->path = malloc(work->len + 1);
 	strncpy(work->path, filename, work->len + 1);
 
-
 	int num_threads = get_concurrency();
 	pthread_t * threads = calloc(num_threads, sizeof(pthread_t));
 	for(uint32_t i = 0; i < num_threads; i++) {
