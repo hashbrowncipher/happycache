@@ -6,6 +6,6 @@ script: dpkg-buildpackage
 sudo: required
 dist: trusty
 before_install:
-  - sudo add-apt-repository ppa:ubuntu-toolchain-r/test
+  - sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
   - sudo apt-get -qq update
-  - sudo apt-get install debhelper fakeroot gcc
+  - sudo apt-get install -y debhelper fakeroot gcc
