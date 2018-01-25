@@ -3,7 +3,7 @@ Maintainer: Josh Snyder <josh@code406.com>
 Section: database
 Priority: optional
 Standards-Version: 3.9.7
-Build-Depends: debhelper (>= 9)
+Build-Depends: debhelper (>= 9), zlib1g-dev
 Homepage: https://github.com/hashbrowncipher/happycache
 
 Package: happycache
