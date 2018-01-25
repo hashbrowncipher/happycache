@@ -1,6 +1,9 @@
 happycache: a utility for loading pages into cache
 ==================================================
 
+.. image:: https://travis-ci.org/hashbrowncipher/happycache.svg?branch=master
+    :target: https://travis-ci.org/hashbrowncipher/happycache
+
 Databases such as PostgreSQL and Cassandra make extensive use of the OS page
 cache to serve queries. Maintenance events like reboots result in the database
 software operating against an empty or almost empty page cache, hampering
