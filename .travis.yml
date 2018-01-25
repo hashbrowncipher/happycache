@@ -2,12 +2,10 @@
 
 language: c
 sudo: false 
-script: dpkg-buildpackage
+script: CC=gcc-7 dpkg-buildpackage
 sudo: required
 dist: trusty
 before_install:
   - sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
   - sudo apt-get -qq update
   - sudo apt-get install -y debhelper fakeroot gcc-7
-env:
-  - CC=gcc-7
