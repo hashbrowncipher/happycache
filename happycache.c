@@ -29,7 +29,7 @@ struct read_work {
 	struct singly_linked list;
 	int fd;
 	void * addr;
-    void * base_addr;
+	void * base_addr;
 };
 typedef struct read_work read_work;
 
@@ -66,6 +66,10 @@ uint16_t get_concurrency() {
 void read_worker(struct loader_state * state) {
 	volatile long val = 0;
 	while(true) {
+		sl * item = list_pop_head(state->work_list);
+		if(item == NULL) {
+			break;
+		}
 		read_work * my_work = container_of(
 			list_pop_head(state->work_list),
 			read_work,
@@ -187,9 +191,15 @@ int load_from_map(gzFile map, int num_threads) {
 	//page == -1 signifies that we are between files
 	int64_t page = -1;
 
-	while(!gzeof(map)) {
+	while(true) {
 		if(gzgets(map, line, sizeof(line)) == NULL) {
-			return 1;
+			if(!gzeof(map)) {
+				//The file is corrupt?
+				fputs(gzerror(map, NULL), stderr);
+
+				return 1;
+			}
+			break;
 		}
 
 		size_t len = strlen(line) - 1;
@@ -267,8 +277,9 @@ void do_load(int argc, char** argv, char * progname) {
 		exit(1);
 	}
 
-	load_from_map(map, num_threads);
+	int ret = load_from_map(map, num_threads);
 	gzclose(map);
+	exit(ret);
 }
 
 void do_dump(int argc, char ** argv, char * progname) {

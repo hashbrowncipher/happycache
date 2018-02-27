@@ -15,14 +15,13 @@ struct singly_linked {
 typedef struct singly_linked sl;
 
 struct singly_linked_list {
-	sl * head;
-	sl ** tail;
+	sl * head;				//guarded by head_lock (RW)
+	sl ** tail;				//guarded by tail_lock (RW)
+	bool closed;			//guarded by head_lock (RW)
+	pthread_cond_t cond;	//guarded by head_lock (waits)
 
 	pthread_mutex_t head_lock;
 	pthread_mutex_t tail_lock;
-	pthread_cond_t cond;
-	uint64_t items;
-	bool closed;
 };
 typedef struct singly_linked_list sll;
 
