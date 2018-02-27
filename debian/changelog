@@ -1,3 +1,9 @@
+happycache (0.0.3) unstable; urgency=medium
+
+  * packaging bump
+
+ -- Josh Snyder <josh@code406.com>  Fri, 26 Jan 2018 23:40:17 +0000
+
 happycache (0.0.2) unstable; urgency=medium
 
   * XFS doesn't provide d_type, so we have to stat()
