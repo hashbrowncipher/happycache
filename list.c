@@ -8,30 +8,34 @@
 #include "list.h"
 
 sl * list_pop_head(sll * list) {
-	pthread_mutex_lock(&list->head_lock);
-	while(list->items == 0 && !list->closed) {
-		pthread_cond_wait(&list->cond, &list->head_lock);
-	}
+	sl * ret = NULL;
 
-	sl * ret = list->head;
-	if(ret != NULL) {
-		atomic_fetch_add_explicit(&list->items, -1, memory_order_relaxed);
-		list->head = ret->next;
-		if(list->head == NULL) {
-			// If we have emptied the list, we need to reset the tail
-			// pointer to equal head.
-			pthread_mutex_lock(&list->tail_lock);
-			// Double check. This could have changed.
-			if(ret->next == NULL) {
-				list->tail = &list->head;
-			} else {
-				list->head = ret->next;
+	pthread_mutex_lock(&list->head_lock);
+	while(true) {
+		ret = list->head;
+
+		if(ret != NULL) {
+			list->head = ret->next;
+			if(list->head == NULL) {
+					// If we have emptied the list, we need to reset the tail
+					// pointer to equal head.
+					pthread_mutex_lock(&list->tail_lock);
+					// Double check. This could have changed.
+					if(ret->next == NULL) {
+						list->tail = &list->head;
+					} else {
+						list->head = ret->next;
+					}
 			}
-			pthread_mutex_unlock(&list->tail_lock);
+			break;
+		} else if(list->closed) {
+			break;
+		} else {
+			pthread_cond_wait(&list->cond, &list->head_lock);
 		}
 	}
-
 	pthread_mutex_unlock(&list->head_lock);
+
 	return ret;
 }
 
@@ -44,7 +48,6 @@ void list_push_head(sll * list, sl * item) {
 		locked_tail = true;
 	}
 
-
 	item->next = list->head;
 	list->head = item;
 	pthread_mutex_unlock(&list->head_lock);
@@ -53,24 +56,22 @@ void list_push_head(sll * list, sl * item) {
 		pthread_mutex_unlock(&list->tail_lock);
 	}
 
-	atomic_fetch_add(&list->items, 1);
 	pthread_cond_signal(&list->cond);
 }
 
 void list_push_tail(sll * list, sl * l) {
-	pthread_mutex_lock(&list->tail_lock);
-
+	//Clear any existing value out
 	l->next = NULL;
+
+	pthread_mutex_lock(&list->tail_lock);
 	*list->tail = l;
 	list->tail = &l->next;
-
 	pthread_mutex_unlock(&list->tail_lock);
-	atomic_fetch_add(&list->items, 1);
+
 	pthread_cond_signal(&list->cond);
 }
 
 void list_init(sll * list) {
-	list->items = 0;
 	list->head = NULL;
 	list->tail = &list->head;
 	list->closed = false;
@@ -80,6 +81,9 @@ void list_init(sll * list) {
 }
 
 void list_close(sll * list) {
+	pthread_mutex_lock(&list->head_lock);
 	list->closed = true;
+	pthread_mutex_unlock(&list->head_lock);
+
 	pthread_cond_broadcast(&list->cond);
 }
