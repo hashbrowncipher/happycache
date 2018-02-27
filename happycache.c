@@ -267,8 +267,9 @@ void do_load(int argc, char** argv, char * progname) {
 		exit(1);
 	}
 
-	load_from_map(map, num_threads);
+	int ret = load_from_map(map, num_threads);
 	gzclose(map);
+	exit(ret);
 }
 
 void do_dump(int argc, char ** argv, char * progname) {
