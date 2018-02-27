@@ -60,15 +60,32 @@ void list_push_head(sll * list, sl * item) {
 }
 
 void list_push_tail(sll * list, sl * l) {
+	bool lock_head = false;
 	//Clear any existing value out
 	l->next = NULL;
 
 	pthread_mutex_lock(&list->tail_lock);
+	if(list->tail == &list->head) {
+		lock_head = true;
+	}
 	*list->tail = l;
 	list->tail = &l->next;
 	pthread_mutex_unlock(&list->tail_lock);
 
+	if(lock_head) {
+		// If we modified list->head, we need to lock head_lock to allow all
+		// threads in the list_pop_head critical section to exit or begin
+		// waiting on the condition variable.
+		pthread_mutex_lock(&list->head_lock);
+	}
+
+	// We must do this unconditionally, because even if we didn't modify head,
+	// there may be waiters stacked up from when the list was last empty.
 	pthread_cond_signal(&list->cond);
+
+	if(lock_head) {
+		pthread_mutex_unlock(&list->head_lock);
+	}
 }
 
 void list_init(sll * list) {
