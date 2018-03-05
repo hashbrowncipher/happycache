@@ -1,3 +1,9 @@
+happycache (0.0.4) unstable; urgency=medium
+
+  * more robust handling of list concurrency
+
+ -- Josh Snyder <josh@code406.com>  Mon, 05 Mar 2018 19:28:25 +0000
+
 happycache (0.0.3) unstable; urgency=medium
 
   * packaging bump
