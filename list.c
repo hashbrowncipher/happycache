@@ -22,8 +22,14 @@ sl * list_pop_head(sll * list) {
 					pthread_mutex_lock(&list->tail_lock);
 					// Double check. This could have changed.
 					if(ret->next == NULL) {
+						// Nobody has come along and modified the tail, so just
+						// update the tail pointer and let the next enqueue
+						// handle it.
 						list->tail = &list->head;
 					} else {
+						// A concurrent writer has modified the tail (which is
+						// ret->next). Just take what they did and put it in
+						// list->head.
 						list->head = ret->next;
 					}
 			}
