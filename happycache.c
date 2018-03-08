@@ -71,7 +71,7 @@ void read_worker(struct loader_state * state) {
 			break;
 		}
 		read_work * my_work = container_of(
-			list_pop_head(state->work_list),
+			item,
 			read_work,
 			list
 		);
@@ -227,6 +227,8 @@ int load_from_map(gzFile map, int num_threads) {
 			page = 0;
 		}
 	}
+
+	list_close(&work_list);
 
 	for(uint32_t i = 0; i < num_threads; i++) {
 		pthread_join(threads[i], NULL);
