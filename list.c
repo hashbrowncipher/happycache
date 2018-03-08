@@ -32,6 +32,8 @@ sl * list_pop_head(sll * list) {
 						// list->head.
 						list->head = ret->next;
 					}
+
+					pthread_mutex_unlock(&list->tail_lock);
 			}
 			break;
 		} else if(list->closed) {
