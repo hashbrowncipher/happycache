@@ -1,3 +1,11 @@
+happycache (0.0.5) unstable; urgency=medium
+
+  * bugfix: add a missing mutex unlock
+  * bugfix: close the list correctly
+  * bugfix: pop only one item per iteration
+
+ -- Josh Snyder <josh@code406.com>  Thu, 08 Mar 2018 20:56:19 +0000
+
 happycache (0.0.4) unstable; urgency=medium
 
   * more robust handling of list concurrency
