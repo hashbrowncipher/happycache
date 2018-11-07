@@ -17,6 +17,7 @@
 #include <unistd.h>
 #include <zlib.h>
 
+#define CHUNK_SIZE (1024 * 1024)
 #define MAP_FILENAME ".happycache.gz"
 
 #include "dumping.h"
@@ -37,6 +38,8 @@ struct fd_info {
 	void * base_addr;
 	size_t num_pages;
 	int64_t refcount;
+	unsigned char * mincore;
+	size_t mincore_start;
 };
 typedef struct fd_info fd_info;
 
@@ -93,6 +96,7 @@ int prepare_file(char * line, fd_info * fds) {
 	fdi->base_addr = MAP_FAILED;
 	fdi->refcount = 1;
 	fdi->num_pages = -1;
+	fdi->mincore_start = 0;
 
 	struct stat file_stat;
 	if(fstat(fd, &file_stat) != 0) {
@@ -120,6 +124,9 @@ int prepare_file(char * line, fd_info * fds) {
 	//tip-top
 	fdi->num_pages = num_pages;
 
+	uint32_t chunk_pages = num_pages > CHUNK_SIZE ? CHUNK_SIZE : num_pages;
+	fdi->mincore = malloc(chunk_pages);
+	mincore(fdi->base_addr, chunk_pages * page_size, fdi->mincore);
 	return fd;
 }
 
@@ -134,12 +141,33 @@ void enqueue_load_page(
 		return;
 	}
 
-	char * file_mmap = fds[fd].base_addr;
-	uint64_t num_pages = fds[fd].num_pages;
+	fd_info * fdi = &fds[fd];
+	char * file_mmap = fdi->base_addr;
+	uint64_t num_pages = fdi->num_pages;
 
 	if(page > num_pages) {
 		return;
 	}
+
+	uint64_t mincore_offset = page - fdi->mincore_start;
+	if(mincore_offset > CHUNK_SIZE) {
+		fdi->mincore_start = page;
+		mincore_offset = 0;
+		uint64_t remaining = num_pages - page;
+		uint64_t chunk_pages = remaining > CHUNK_SIZE ? CHUNK_SIZE : remaining;
+
+		mincore(
+			fdi->base_addr + fdi->mincore_start * page_size,
+			chunk_pages * page_size,
+			fdi->mincore
+		);
+	}
+
+	//Page is already in RAM. No need to load it.
+	if(fdi->mincore[mincore_offset] & 0x01) {
+		return;
+	}
+
 	read_work * rw = container_of(
 		list_pop_head(free_list),
 		read_work,

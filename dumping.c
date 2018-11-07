@@ -38,6 +38,7 @@ void dump_file(int fd,
 		return;
 	}
 
+	uint64_t file_size = file_stat.st_size;
 	uint64_t file_pages = (file_stat.st_size + page_size - 1) / page_size;
 	uint64_t processed_pages = 0;
 	uint32_t chunk_pages = file_pages > CHUNK_SIZE ? CHUNK_SIZE : file_pages;
@@ -48,19 +49,18 @@ void dump_file(int fd,
 		return;
 	}
 
+	char* file_mmap = mmap(0, file_size, PROT_NONE, MAP_SHARED, fd, 0);
 	while(file_pages > 0) {
 		uint32_t chunk_pages = file_pages > CHUNK_SIZE ? CHUNK_SIZE : file_pages;
 		uint64_t chunk_bytes = chunk_pages * page_size;
 
-		char* file_mmap = mmap(0, chunk_bytes, PROT_NONE, MAP_SHARED, fd, processed_pages * page_size);
 		if(file_mmap == MAP_FAILED) {
 			fprintf(stderr, "%s: %s\n", strerror(errno), fullpath);
 			goto out;
 		}
 		file_pages -= chunk_pages;
 
-		int ret = mincore(file_mmap, chunk_bytes, mincore_vec);
-		munmap(file_mmap, chunk_bytes);
+		int ret = mincore(file_mmap + processed_pages * 4096, chunk_bytes, mincore_vec);
 
 		if(ret != 0) {
 			fprintf(stderr, "mincore() %s: %s\n", strerror(errno), fullpath);
@@ -90,6 +90,7 @@ void dump_file(int fd,
 
 		processed_pages += chunk_pages;
 	}
+	munmap(file_mmap, file_size);
 
 
 out:
