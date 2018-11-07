@@ -83,15 +83,13 @@ void read_worker(struct loader_state * state) {
 	}
 }
 
-int prepare_file(char * line, fd_info * fds) {
+int prepare_file(char * line, fd_info * fdi) {
 	int fd = open(line, O_RDONLY | O_CLOEXEC);
 	if(-1 == fd) {
 		fprintf(stderr, "Could not open %s: ", line);
 		perror(NULL);
 		return -1;
 	}
-
-	fd_info * fdi = &fds[fd];
 
 	fdi->base_addr = MAP_FAILED;
 	fdi->refcount = 1;
@@ -114,12 +112,6 @@ int prepare_file(char * line, fd_info * fds) {
 		return fd;
 	}
 
-	if(posix_madvise(fdi->base_addr, file_stat.st_size, POSIX_MADV_RANDOM) != 0) {
-		fprintf(stderr, "Could not posix_madvise %s: ", line);
-		perror(NULL);
-		return fd;
-	}
-
 	//Only update the struct's num_pages once we're confident everything's
 	//tip-top
 	fdi->num_pages = num_pages;
@@ -130,94 +122,72 @@ int prepare_file(char * line, fd_info * fds) {
 	return fd;
 }
 
-void enqueue_load_page(
-	fd_info * fds,
+void load_pages(
+	fd_info * fdi,
 	int fd,
-	int64_t page,
-	sll * free_list,
-	sll * work_list
+	uint64_t start,
+	uint64_t count
 ) {
 	if(fd == -1) {
 		return;
 	}
 
-	fd_info * fdi = &fds[fd];
-	char * file_mmap = fdi->base_addr;
 	uint64_t num_pages = fdi->num_pages;
 
-	if(page > num_pages) {
-		return;
+	if(num_pages - start < count) {
+		count = num_pages - start;
 	}
 
-	uint64_t mincore_offset = page - fdi->mincore_start;
-	if(mincore_offset > CHUNK_SIZE) {
-		fdi->mincore_start = page;
-		mincore_offset = 0;
-		uint64_t remaining = num_pages - page;
-		uint64_t chunk_pages = remaining > CHUNK_SIZE ? CHUNK_SIZE : remaining;
+	while(count > 0) {
+		uint64_t mincore_offset = start - fdi->mincore_start;
+		if(mincore_offset > CHUNK_SIZE) {
+			fdi->mincore_start = start;
+			mincore_offset = 0;
+			uint64_t remaining = num_pages - start;
+			uint64_t chunk_pages = remaining > CHUNK_SIZE ? CHUNK_SIZE : remaining;
 
-		mincore(
-			fdi->base_addr + fdi->mincore_start * page_size,
-			chunk_pages * page_size,
-			fdi->mincore
-		);
+			mincore(
+				fdi->base_addr + fdi->mincore_start * page_size,
+				chunk_pages * page_size,
+				fdi->mincore
+			);
+		}
+
+		if((fdi->mincore[mincore_offset] & 0x01) == 0) {
+			//Page is not already in RAM.
+			break;
+		}
+
+		start += 1;
+		count -= 1;
 	}
 
-	//Page is already in RAM. No need to load it.
-	if(fdi->mincore[mincore_offset] & 0x01) {
-		return;
+	while(count > 0) {
+		// 8 pages (32KB) is much smaller than the 128KB typical max_sectors_kb
+		uint8_t limit = 8;
+		if(count < limit) {
+			limit = count;
+		}
+
+		posix_fadvise(fd, start << page_shift, limit << page_shift, POSIX_FADV_WILLNEED);
+		count -= limit;
+		start += limit;
 	}
 
-	read_work * rw = container_of(
-		list_pop_head(free_list),
-		read_work,
-		list
-	);
-	finished_file_op(&fds[rw->fd], rw->fd);
-
-	fds[fd].refcount++;
-	rw->fd = fd;
-	rw->addr = (void *)&file_mmap[page << page_shift];
-	rw->base_addr = file_mmap;
-	list_push_tail(work_list, &rw->list);
 }
 
 int load_from_map(gzFile map, int num_threads) {
-	sll work_list;
-	sll free_list;
-
 	page_size = sysconf(_SC_PAGESIZE);
 	page_shift = __builtin_ctz(page_size);
 
-	list_init(&work_list);
-	list_init(&free_list);
-
-	uint32_t item_count = num_threads * 2;
-	read_work * items = calloc(item_count, sizeof(read_work));
-	for(uint32_t i = 0; i < item_count; i++) {
-		list_push_tail(&free_list, &items[i].list);
-	}
-
-	fd_info * fds = calloc(item_count * 2, sizeof(fd_info));
-
-	struct loader_state args;
-	args.work_list = &work_list;
-	args.free_list = &free_list;
-
-	pthread_t * threads = calloc(num_threads, sizeof(pthread_t));
-	for(uint32_t i = 0; i < num_threads; i++) {
-		pthread_create(
-			&threads[i],
-			NULL,
-			(void * (*)(void *)) read_worker,
-			(void *) &args
-		);
-	}
+	fd_info fdi;
+	bzero(&fdi, sizeof(fd_info));
 
 	char line[4096];
 	int fd = -1;
 	//page == -1 signifies that we are between files
 	int64_t page = -1;
+	uint64_t count;
 
 	while(true) {
 		if(gzgets(map, line, sizeof(line)) == NULL) {
@@ -227,6 +197,8 @@ int load_from_map(gzFile map, int num_threads) {
 
 				return 1;
 			}
+
+			load_pages(&fdi, fd, page - count, count);
 			break;
 		}
 
@@ -240,29 +212,30 @@ int load_from_map(gzFile map, int num_threads) {
 			if(endptr - line != len) {
 				//We can't parse this as a number, so it must be a filename.
 				//Filenames start either with ./ or /, so this works.
-				page = -1;
 				if(fd != -1) {
-					finished_file_op(&fds[fd], fd);
+					load_pages(&fdi, fd, page - count, count);
+					finished_file_op(&fdi, fd);
 				}
-			} else {
+				page = -1;
+			} else if(skip <= 1) {
 				page += skip;
-				enqueue_load_page(fds, fd, page, &free_list, &work_list);
+				count += 1;
+			} else {
+				load_pages(&fdi, fd, page - count, count);
+				page += skip;
+				count = 1;
 			}
 		}
 
 		if(page < 0) {
-			fd = prepare_file(line, fds);
-			page = 0;
+			fd = prepare_file(line, &fdi);
+
+			// This is awful. It makes way more sense as page = 0
+			page = 1;
+			count = 0;
 		}
 	}
 
-	list_close(&work_list);
-
-	for(uint32_t i = 0; i < num_threads; i++) {
-		pthread_join(threads[i], NULL);
-	}
-
-	// We leak fds here. Not much of an issue.
 	return 0;
 }
 
