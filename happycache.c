@@ -156,18 +156,23 @@ void load_pages(
 			);
 		}
 
-		if(!slow && (fdi->mincore[mincore_offset] & 0x01) == 0) {
-			// 8 pages (32KB) is much smaller than the 128KB typical max_sectors_kb
-			uint8_t limit = 8;
-			if(count < limit) {
-				limit = count;
-			}
+		if((fdi->mincore[mincore_offset] & 0x01) == 0) {
+			if(slow) {
+				val ^= *(long *)(fdi->base_addr + (start << page_shift));
+				start += 1;
+				count -= 1;
+			} else {
+				// 8 pages (32KB) is much smaller than the 128KB typical max_sectors_kb
+				uint8_t limit = 8;
+				if(count < limit) {
+					limit = count;
+				}
 
-			posix_fadvise(fd, start << page_shift, limit << page_shift, POSIX_FADV_WILLNEED);
-			count -= limit;
-			start += limit;
+				posix_fadvise(fd, start << page_shift, limit << page_shift, POSIX_FADV_WILLNEED);
+				count -= limit;
+				start += limit;
+			}
 		} else {
-			val ^= *(long *)(fdi->base_addr + (start << page_shift));
 			start += 1;
 			count -= 1;
 		}
