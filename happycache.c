@@ -126,7 +126,8 @@ void load_pages(
 	fd_info * fdi,
 	int fd,
 	uint64_t start,
-	uint64_t count
+	uint64_t count,
+	bool slow
 ) {
 	if(fd == -1) {
 		return;
@@ -137,6 +138,8 @@ void load_pages(
 	if(num_pages - start < count) {
 		count = num_pages - start;
 	}
+
+	volatile long val = 0;
 
 	while(count > 0) {
 		uint64_t mincore_offset = start - fdi->mincore_start;
@@ -153,30 +156,25 @@ void load_pages(
 			);
 		}
 
-		if((fdi->mincore[mincore_offset] & 0x01) == 0) {
-			//Page is not already in RAM.
-			break;
+		if(!slow && (fdi->mincore[mincore_offset] & 0x01) == 0) {
+			// 8 pages (32KB) is much smaller than the 128KB typical max_sectors_kb
+			uint8_t limit = 8;
+			if(count < limit) {
+				limit = count;
+			}
+
+			posix_fadvise(fd, start << page_shift, limit << page_shift, POSIX_FADV_WILLNEED);
+			count -= limit;
+			start += limit;
+		} else {
+			val ^= *(long *)(fdi->base_addr + (start << page_shift));
+			start += 1;
+			count -= 1;
 		}
-
-		start += 1;
-		count -= 1;
 	}
-
-	while(count > 0) {
-		// 8 pages (32KB) is much smaller than the 128KB typical max_sectors_kb
-		uint8_t limit = 8;
-		if(count < limit) {
-			limit = count;
-		}
-
-		posix_fadvise(fd, start << page_shift, limit << page_shift, POSIX_FADV_WILLNEED);
-		count -= limit;
-		start += limit;
-	}
-
 }
 
-int load_from_map(gzFile map, int num_threads) {
+int load_from_map(gzFile map, bool slow) {
 	page_size = sysconf(_SC_PAGESIZE);
 	page_shift = __builtin_ctz(page_size);
 
@@ -198,7 +196,7 @@ int load_from_map(gzFile map, int num_threads) {
 				return 1;
 			}
 
-			load_pages(&fdi, fd, page - count, count);
+			load_pages(&fdi, fd, page - count, count, slow);
 			break;
 		}
 
@@ -213,7 +211,7 @@ int load_from_map(gzFile map, int num_threads) {
 				//We can't parse this as a number, so it must be a filename.
 				//Filenames start either with ./ or /, so this works.
 				if(fd != -1) {
-					load_pages(&fdi, fd, page - count, count);
+					load_pages(&fdi, fd, page - count, count, slow);
 					finished_file_op(&fdi, fd);
 				}
 				page = -1;
@@ -221,7 +219,7 @@ int load_from_map(gzFile map, int num_threads) {
 				page += skip;
 				count += 1;
 			} else {
-				load_pages(&fdi, fd, page - count, count);
+				load_pages(&fdi, fd, page - count, count, slow);
 				page += skip;
 				count = 1;
 			}
@@ -258,31 +256,28 @@ void do_load(int argc, char** argv, char * progname) {
 		do_usage(progname);
 	}
 
-	uint16_t num_threads = get_concurrency();
-	if(argc >= 1) {
-		char * endptr;
-		num_threads = strtoul(argv[0], &endptr, 10);
-		if(argv[0] + strlen(argv[0]) > endptr) {
-			fputs("Invalid number of threads", stderr);
-			exit(1);
-		}
-	}
-
 	char * to_read = MAP_FILENAME;
 	if(argc >= 2) {
 		to_read = argv[1];
 	}
 
-	gzFile map = NULL;
-	map = gzopen(to_read, "rb");
-	if(map == NULL) {
-		perror("Could not open map file");
-		exit(1);
+	for(int i = 0; i < 2; i++) {
+		gzFile map = NULL;
+		map = gzopen(to_read, "rb");
+		if(map == NULL) {
+			perror("Could not open map file");
+			exit(1);
+		}
+
+		int ret = load_from_map(map, i);
+		gzclose(map);
+
+		if(ret) {
+			exit(ret);
+		}
 	}
 
-	int ret = load_from_map(map, num_threads);
-	gzclose(map);
-	exit(ret);
+	exit(0);
 }
 
 void do_dump(int argc, char ** argv, char * progname) {
