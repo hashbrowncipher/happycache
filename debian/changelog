@@ -1,3 +1,9 @@
+happycache (0.1.0) unstable; urgency=medium
+
+  * performance improvement: switch to using fadvise for an initial pass
+
+ -- Josh Snyder <joshs@netflix.com>  Thu, 08 Nov 2018 10:26:11 -0800
+
 happycache (0.0.5) unstable; urgency=medium
 
   * bugfix: add a missing mutex unlock
