@@ -14,6 +14,7 @@
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/sysinfo.h>
 #include <unistd.h>
 #include <zlib.h>
 
@@ -174,6 +175,11 @@ int load_from_map(gzFile map) {
 	page_size = sysconf(_SC_PAGESIZE);
 	page_shift = __builtin_ctz(page_size);
 
+	struct sysinfo info;
+	sysinfo(&info);
+
+	int pages_left = info.totalram >> page_shift;
+
 	fd_info fdi;
 	bzero(&fdi, sizeof(fd_info));
 
@@ -183,7 +189,7 @@ int load_from_map(gzFile map) {
 	int64_t page = -1;
 	uint64_t count = 0;
 
-	while(true) {
+	while(pages_left--) {
 		if(gzgets(map, line, sizeof(line)) == NULL) {
 			if(!gzeof(map)) {
 				//The file is corrupt?
