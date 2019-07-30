@@ -14,7 +14,9 @@
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#ifdef __linux__
 #include <sys/sysinfo.h>
+#endif
 #include <unistd.h>
 #include <zlib.h>
 
@@ -175,10 +177,14 @@ int load_from_map(gzFile map) {
 	page_size = sysconf(_SC_PAGESIZE);
 	page_shift = __builtin_ctz(page_size);
 
+#ifdef __linux__
 	struct sysinfo info;
 	sysinfo(&info);
+	uint64_t pages_left = info.totalram >> page_shift;
+#else
+	uint64_t pages_left = -1;
+#endif
 
-	int pages_left = info.totalram >> page_shift;
 
 	fd_info fdi;
 	bzero(&fdi, sizeof(fd_info));
