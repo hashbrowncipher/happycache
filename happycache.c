@@ -181,7 +181,7 @@ int load_from_map(gzFile map) {
 	int fd = -1;
 	//page == -1 signifies that we are between files
 	int64_t page = -1;
-	uint64_t count;
+	uint64_t count = 0;
 
 	while(true) {
 		if(gzgets(map, line, sizeof(line)) == NULL) {

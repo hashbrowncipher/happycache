@@ -1,6 +1,6 @@
 prefix = /usr/local
 
-CFLAGS=-O2 -g -Wall -std=gnu11
+CFLAGS=-O2 -g -Wall -Werror -std=gnu11
 LDLIBS=-lpthread -lz
 
 .PHONY: all
